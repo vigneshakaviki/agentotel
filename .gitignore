@@ -1,0 +1,5 @@
+/agentotel
+/dist/
+*.db
+*.db-journal
+.DS_Store

@@ -1,0 +1,31 @@
+# Pricing table: USD per 1,000,000 tokens, by model.
+# Edit this file and open a PR to add/update a model — no Go code changes needed.
+# Unknown models fall back to the "default" entry below so cost is still
+# estimated (roughly) rather than silently reported as zero.
+
+models:
+  # OpenAI
+  gpt-5:
+    input_per_million: 5.00
+    output_per_million: 15.00
+  gpt-4o:
+    input_per_million: 2.50
+    output_per_million: 10.00
+  gpt-4o-mini:
+    input_per_million: 0.15
+    output_per_million: 0.60
+
+  # Anthropic
+  claude-opus-5:
+    input_per_million: 15.00
+    output_per_million: 75.00
+  claude-sonnet-5:
+    input_per_million: 3.00
+    output_per_million: 15.00
+  claude-haiku-4-5-20251001:
+    input_per_million: 0.80
+    output_per_million: 4.00
+
+  default:
+    input_per_million: 3.00
+    output_per_million: 15.00
