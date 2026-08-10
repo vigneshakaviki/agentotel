@@ -60,12 +60,18 @@ func TestProxyRecordsSpanAndForwardsResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST through proxy: %v", err)
 	}
-	defer resp.Body.Close()
 
 	gotBody, _ := io.ReadAll(resp.Body)
 	if string(gotBody) != upstreamBody {
 		t.Errorf("response forwarded to client = %q, want %q", gotBody, upstreamBody)
 	}
+	// Span capture fires from the response body's Close(), and the actual
+	// DB write happens on Store's background writer goroutine — both need
+	// to happen before we can assert on RecentSpans. Flush blocks until
+	// every write enqueued before it has landed, so this is deterministic,
+	// not a sleep-and-hope.
+	resp.Body.Close()
+	st.Flush()
 
 	spans, err := st.RecentSpans(time.Hour)
 	if err != nil {

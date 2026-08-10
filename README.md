@@ -57,24 +57,37 @@ curl http://localhost:8787/openai/v1/chat/completions \
 ```
 agent / SDK  →  agentotel (local proxy)  →  real provider API
                        │
-                       └─ parses response usage, prices it, writes a span
+                       └─ tees the response, prices it, writes a span async
 ```
 
 agentotel is a reverse proxy (`net/http/httputil.ReverseProxy`) in front of
-each provider's real API. On every 2xx response it reads the `usage` field
-already present in the JSON body (no extra request, no token-counting
-guesswork), prices it against an embedded, PR-editable pricing table
-(`internal/pricing/models.yaml`), and writes one row to a local SQLite
-database — then forwards the original response back to the caller
-untouched.
+each provider's real API. The response body is streamed to the caller as it
+arrives — tracing adds no latency and doesn't break streaming, whether or
+not the call ends up being parseable (see the streaming caveat below). In
+parallel, up to 1MB of the body is captured; once it's fully read, agentotel
+parses the `usage` field already present in the JSON (no extra request, no
+token-counting guesswork), prices it against an embedded, PR-editable
+pricing table (`internal/pricing/models.yaml`), and hands it to a background
+writer that persists it to a local SQLite database (WAL mode, so `agentotel
+start` and `agentotel trace` running at the same time don't collide) —
+none of this is on the request's critical path.
 
 ## Status: v0.1
 
-Supports OpenAI (`/v1/chat/completions`) and Anthropic (`/v1/messages`),
-non-streaming requests only. Roadmap:
+Supports OpenAI (`/v1/chat/completions`) and Anthropic (`/v1/messages`).
 
-- **v0.5**: streaming (SSE) support, Ollama + Gemini providers, OTLP export
-  (`agentotel export --format otlp`) for Grafana/Jaeger, cost-budget alerts.
+**Known gap**: streaming (`stream: true`) responses are forwarded correctly
+(see above — no added latency) but aren't parsed into a span yet, since the
+body arrives as SSE frames rather than one JSON object. Most real agents
+default to streaming, so most calls aren't traced yet — tracked in
+[#1](https://github.com/vigneshakaviki/agentotel/issues/1). Non-streaming
+calls (e.g. Aider's own commit-message generation) are captured today.
+
+Roadmap:
+
+- **v0.5**: streaming (SSE) span capture (#1), Ollama + Gemini providers,
+  OTLP export (`agentotel export --format otlp`) for Grafana/Jaeger,
+  cost-budget alerts.
 - **v1.0**: optional hosted trace storage for people who don't want to run
   their own Grafana.
 

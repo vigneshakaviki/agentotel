@@ -5,9 +5,6 @@
 package proxy
 
 import (
-	"bytes"
-	"context"
-	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -19,11 +16,11 @@ import (
 	"agentotel/internal/store"
 )
 
-type startTimeKey struct{}
-
 // New builds an http.Handler that proxies every route in DefaultRoutes,
 // recording a span for each successful (2xx) response into st, priced via
-// prices.
+// prices. Response bodies are streamed to the caller as they arrive —
+// tracing never adds latency to the proxied call, whether or not it turns
+// out to be parseable (see teetransport.go).
 func New(st *store.Store, prices *pricing.Table) (http.Handler, error) {
 	mux := http.NewServeMux()
 	for _, route := range DefaultRoutes {
@@ -31,10 +28,7 @@ func New(st *store.Store, prices *pricing.Table) (http.Handler, error) {
 		if err != nil {
 			return nil, err
 		}
-		handler := newRouteHandler(route, target, st, prices)
-		// Register both "/openai" and "/openai/" so a request to the bare
-		// prefix doesn't 404 before hitting the trimming logic.
-		mux.Handle(route.Prefix+"/", withStartTime(handler))
+		mux.Handle(route.Prefix+"/", newRouteHandler(route, target, st, prices))
 	}
 	return mux, nil
 }
@@ -47,55 +41,35 @@ func newRouteHandler(route Route, target *url.URL, st *store.Store, prices *pric
 		req.Host = target.Host
 	}
 
-	modifyResponse := func(resp *http.Response) error {
-		start, _ := resp.Request.Context().Value(startTimeKey{}).(time.Time)
-		latency := time.Since(start)
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return err
+	onComplete := func(elapsed time.Duration, statusCode int, body []byte) {
+		if statusCode != http.StatusOK {
+			return // don't attempt to parse error bodies as usage payloads
 		}
-		resp.Body.Close()
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-
-		if resp.StatusCode != http.StatusOK {
-			return nil // don't attempt to parse error bodies as usage payloads
-		}
-
 		usage, err := route.Parser.Parse(body)
 		if err != nil {
+			// Expected for streaming (SSE) responses today — the body isn't
+			// a single JSON object. Tracked as a known gap, not silently
+			// swallowed: https://github.com/vigneshakaviki/agentotel/issues/1
 			log.Printf("agentotel: %s: failed to parse usage from response: %v", route.Parser.Name(), err)
-			return nil
+			return
 		}
-
-		cost := prices.Cost(usage.Model, usage.InputTokens, usage.OutputTokens)
-		span := store.Span{
+		st.InsertSpan(store.Span{
 			TS:           time.Now(),
 			Provider:     route.Parser.Name(),
 			Model:        usage.Model,
 			InputTokens:  usage.InputTokens,
 			OutputTokens: usage.OutputTokens,
-			CostUSD:      cost,
-			LatencyMS:    latency.Milliseconds(),
-			StatusCode:   resp.StatusCode,
-		}
-		if err := st.InsertSpan(span); err != nil {
-			log.Printf("agentotel: failed to record span: %v", err)
-		}
-		return nil
+			CostUSD:      prices.Cost(usage.Model, usage.InputTokens, usage.OutputTokens),
+			LatencyMS:    elapsed.Milliseconds(),
+			StatusCode:   statusCode,
+		})
 	}
 
 	return &httputil.ReverseProxy{
-		Director:       director,
-		ModifyResponse: modifyResponse,
+		Director: director,
+		Transport: &teeTransport{
+			rt:         http.DefaultTransport,
+			onComplete: onComplete,
+		},
 	}
-}
-
-// withStartTime stamps the request context with the time the proxy first
-// saw it, so ModifyResponse can compute end-to-end latency later.
-func withStartTime(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), startTimeKey{}, time.Now())
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
 }
