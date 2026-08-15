@@ -25,7 +25,7 @@ const maxCaptureBytes = 1 << 20 // 1MB
 // responses. See https://github.com/golang/go/issues/27816.
 type teeTransport struct {
 	rt         http.RoundTripper
-	onComplete func(elapsed time.Duration, statusCode int, body []byte)
+	onComplete func(elapsed time.Duration, statusCode int, contentType string, body []byte)
 }
 
 func (t *teeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -34,11 +34,12 @@ func (t *teeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return resp, err
 	}
+	contentType := resp.Header.Get("Content-Type")
 	resp.Body = &teeReadCloser{
 		rc:  resp.Body,
 		buf: &bytes.Buffer{},
 		onClose: func(captured []byte) {
-			t.onComplete(time.Since(start), resp.StatusCode, captured)
+			t.onComplete(time.Since(start), resp.StatusCode, contentType, captured)
 		},
 	}
 	return resp, nil

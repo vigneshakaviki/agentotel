@@ -41,15 +41,16 @@ func newRouteHandler(route Route, target *url.URL, st *store.Store, prices *pric
 		req.Host = target.Host
 	}
 
-	onComplete := func(elapsed time.Duration, statusCode int, body []byte) {
+	onComplete := func(elapsed time.Duration, statusCode int, contentType string, body []byte) {
 		if statusCode != http.StatusOK {
 			return // don't attempt to parse error bodies as usage payloads
 		}
-		usage, err := route.Parser.Parse(body)
+		parse := route.Parser.Parse
+		if strings.Contains(contentType, "text/event-stream") {
+			parse = route.Parser.ParseSSE
+		}
+		usage, err := parse(body)
 		if err != nil {
-			// Expected for streaming (SSE) responses today — the body isn't
-			// a single JSON object. Tracked as a known gap, not silently
-			// swallowed: https://github.com/vigneshakaviki/agentotel/issues/1
 			log.Printf("agentotel: %s: failed to parse usage from response: %v", route.Parser.Name(), err)
 			return
 		}

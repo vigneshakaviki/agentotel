@@ -74,25 +74,32 @@ none of this is on the request's critical path.
 
 ## Status: v0.1
 
-Supports OpenAI (`/v1/chat/completions`) and Anthropic (`/v1/messages`).
+Supports OpenAI (`/v1/chat/completions`) and Anthropic (`/v1/messages`),
+streaming and non-streaming.
 
-**Known gap**: streaming (`stream: true`) responses are forwarded correctly
-(see above — no added latency) but aren't parsed into a span yet, since the
-body arrives as SSE frames rather than one JSON object. Most real agents
-default to streaming, so most calls aren't traced yet — tracked in
-[#1](https://github.com/vigneshakaviki/agentotel/issues/1). Non-streaming
-calls (e.g. Aider's own commit-message generation) are captured today.
+Streaming (`stream: true`) responses are forwarded with no added latency
+and now also parsed into a span, by reading the SSE frames captured
+alongside the passthrough copy:
+
+- **Anthropic** always includes usage in its stream (split across the
+  `message_start` and `message_delta` events), so streaming calls are
+  traced automatically.
+- **OpenAI** only includes usage in its stream if the request sets
+  `"stream_options": {"include_usage": true}` — without it, no chunk
+  carries token counts and the call is logged but not traced. Add that
+  option to your client's request body to get OpenAI streaming spans.
 
 Roadmap:
 
-- **v0.5**: streaming (SSE) span capture (#1), Ollama + Gemini providers,
-  OTLP export (`agentotel export --format otlp`) for Grafana/Jaeger,
-  cost-budget alerts.
+- **v0.5**: Ollama + Gemini providers, OTLP export
+  (`agentotel export --format otlp`) for Grafana/Jaeger, cost-budget
+  alerts.
 - **v1.0**: optional hosted trace storage for people who don't want to run
   their own Grafana.
 
 Adding a new provider is two files: implement `providers.Parser` (see
-`internal/providers/openai.go` for the shape) and add one entry to
+`internal/providers/openai.go` for the shape — both `Parse` for a single
+JSON response and `ParseSSE` for a streamed one) and add one entry to
 `DefaultRoutes` in `internal/proxy/parser.go`. Updating pricing is a
 one-line YAML edit in `internal/pricing/models.yaml` — no Go code required.
 

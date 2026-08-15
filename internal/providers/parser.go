@@ -14,6 +14,11 @@ type Usage struct {
 type Parser interface {
 	// Name identifies the provider, e.g. "openai" or "anthropic".
 	Name() string
-	// Parse extracts model + token usage from a successful response body.
+	// Parse extracts model + token usage from a successful, non-streaming
+	// (single JSON object) response body.
 	Parse(body []byte) (Usage, error)
+	// ParseSSE extracts model + token usage from a successful streaming
+	// (text/event-stream) response body — the concatenation of raw
+	// "data: ..." frames as sent by the provider, in order.
+	ParseSSE(body []byte) (Usage, error)
 }
