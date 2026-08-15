@@ -2,30 +2,51 @@
 # Edit this file and open a PR to add/update a model — no Go code changes needed.
 # Unknown models fall back to the "default" entry below so cost is still
 # estimated (roughly) rather than silently reported as zero.
+#
+# Cached tokens are billed at their own rates and matter a lot for coding
+# agents, which re-send a large cached prefix on every turn:
+#
+#   cache_read_per_million   input served from cache (heavily discounted)
+#   cache_write_per_million  input written into cache (charged a premium)
+#
+# Both are optional. If omitted, the base input rate is used for that
+# bucket — conservative, never free. OpenAI's prompt caching is automatic
+# with no write premium, so its entries set only cache_read_per_million.
 
 models:
-  # OpenAI
+  # OpenAI — cached input discounted, no separate cache-write charge.
   gpt-5:
     input_per_million: 5.00
     output_per_million: 15.00
+    cache_read_per_million: 0.50
   gpt-4o:
     input_per_million: 2.50
     output_per_million: 10.00
+    cache_read_per_million: 1.25
   gpt-4o-mini:
     input_per_million: 0.15
     output_per_million: 0.60
+    cache_read_per_million: 0.075
 
-  # Anthropic
+  # Anthropic — cache reads are 0.1x input, 5m cache writes are 1.25x input.
   claude-opus-5:
     input_per_million: 15.00
     output_per_million: 75.00
+    cache_read_per_million: 1.50
+    cache_write_per_million: 18.75
   claude-sonnet-5:
     input_per_million: 3.00
     output_per_million: 15.00
+    cache_read_per_million: 0.30
+    cache_write_per_million: 3.75
   claude-haiku-4-5-20251001:
     input_per_million: 0.80
     output_per_million: 4.00
+    cache_read_per_million: 0.08
+    cache_write_per_million: 1.00
 
   default:
     input_per_million: 3.00
     output_per_million: 15.00
+    cache_read_per_million: 0.30
+    cache_write_per_million: 3.75

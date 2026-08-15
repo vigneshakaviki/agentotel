@@ -13,13 +13,31 @@ type anthropicParser struct{}
 
 func (anthropicParser) Name() string { return "anthropic" }
 
+// anthropicUsage mirrors the `usage` object Anthropic returns. Unlike
+// OpenAI, the cache counts are additive: input_tokens already excludes
+// anything served from or written to the cache, so the three fields map
+// straight onto Usage's buckets with no subtraction.
+type anthropicUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+}
+
+func (u anthropicUsage) normalize(model string) Usage {
+	return Usage{
+		Model:            model,
+		InputTokens:      u.InputTokens,
+		OutputTokens:     u.OutputTokens,
+		CacheReadTokens:  u.CacheReadInputTokens,
+		CacheWriteTokens: u.CacheCreationInputTokens,
+	}
+}
+
 func (anthropicParser) Parse(body []byte) (Usage, error) {
 	var resp struct {
-		Model string `json:"model"`
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
+		Model string         `json:"model"`
+		Usage anthropicUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return Usage{}, fmt.Errorf("parse anthropic response: %w", err)
@@ -27,37 +45,28 @@ func (anthropicParser) Parse(body []byte) (Usage, error) {
 	if resp.Model == "" {
 		return Usage{}, fmt.Errorf("anthropic response missing model field")
 	}
-	return Usage{
-		Model:        resp.Model,
-		InputTokens:  resp.Usage.InputTokens,
-		OutputTokens: resp.Usage.OutputTokens,
-	}, nil
+	return resp.Usage.normalize(resp.Model), nil
 }
 
 // ParseSSE extracts usage from an Anthropic Messages stream. Unlike OpenAI,
 // Anthropic always reports usage in streaming mode, split across two
-// events: message_start carries the model and input token count (plus
-// cache token fields, not tracked here); message_delta carries the final
-// cumulative output token count. We take the model + input tokens from the
-// first and the output tokens from the last of each, respectively.
-func (p anthropicParser) ParseSSE(body []byte) (Usage, error) {
+// events: message_start carries the model plus the input and cache token
+// counts, and message_delta carries the final cumulative output count.
+//
+// Anthropic folds thinking tokens into output_tokens without breaking them
+// out, so ReasoningTokens is left zero here rather than guessed at.
+func (anthropicParser) ParseSSE(body []byte) (Usage, error) {
+	var usage anthropicUsage
 	var model string
-	var inputTokens int
-	var outputTokens int
 	var sawUsage bool
 	for _, frame := range sseDataFrames(body) {
 		var event struct {
 			Type    string `json:"type"`
 			Message struct {
-				Model string `json:"model"`
-				Usage struct {
-					InputTokens  int `json:"input_tokens"`
-					OutputTokens int `json:"output_tokens"`
-				} `json:"usage"`
+				Model string         `json:"model"`
+				Usage anthropicUsage `json:"usage"`
 			} `json:"message"`
-			Usage struct {
-				OutputTokens int `json:"output_tokens"`
-			} `json:"usage"`
+			Usage anthropicUsage `json:"usage"`
 		}
 		if err := json.Unmarshal(frame, &event); err != nil {
 			continue // tolerate a truncated trailing frame
@@ -65,11 +74,13 @@ func (p anthropicParser) ParseSSE(body []byte) (Usage, error) {
 		switch event.Type {
 		case "message_start":
 			model = event.Message.Model
-			inputTokens = event.Message.Usage.InputTokens
+			usage.InputTokens = event.Message.Usage.InputTokens
+			usage.CacheReadInputTokens = event.Message.Usage.CacheReadInputTokens
+			usage.CacheCreationInputTokens = event.Message.Usage.CacheCreationInputTokens
 			sawUsage = true
 		case "message_delta":
 			if event.Usage.OutputTokens > 0 {
-				outputTokens = event.Usage.OutputTokens
+				usage.OutputTokens = event.Usage.OutputTokens
 				sawUsage = true
 			}
 		}
@@ -80,9 +91,5 @@ func (p anthropicParser) ParseSSE(body []byte) (Usage, error) {
 	if !sawUsage {
 		return Usage{}, fmt.Errorf("anthropic stream: no usage found in stream")
 	}
-	return Usage{
-		Model:        model,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-	}, nil
+	return usage.normalize(model), nil
 }
